@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+opencv-python-headless
+easyocr
+numpy
+pandas
+rapidfuzz
+openpyxl
+jinja2

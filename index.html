@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ALIBABA SPEAKER ESTIMATER</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        #sidebar { width: 300px; background: #f4f4f4; padding: 20px; border-right: 1px solid #ccc; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+        #main { flex: 1; position: relative; background: #333; display: flex; justify-content: center; align-items: center; overflow: auto; }
+        #results-panel { height: 200px; background: white; border-top: 1px solid #ccc; position: absolute; bottom: 0; width: 100%; overflow-y: auto; }
+        
+        .image-container { position: relative; display: inline-block; cursor: crosshair; }
+        img#work-canvas { max-width: 100%; max-height: 80vh; display: block; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        
+        input, select, button { width: 100%; padding: 8px; margin-bottom: 5px; box-sizing: border-box; }
+        button.primary { background: #007bff; color: white; border: none; cursor: pointer; font-weight: bold; }
+        button.danger { background: #dc3545; color: white; border: none; cursor: pointer; }
+        button:hover { opacity: 0.9; }
+        
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #eee; position: sticky; top: 0; }
+
+        .loading-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); color:white; display:none; justify-content:center; align-items:center; z-index:999; font-size: 24px;}
+    </style>
+</head>
+<body>
+
+<div id="loading" class="loading-overlay">Processing... Please Wait</div>
+
+<div id="sidebar">
+    <h2>ALIBABA ESTIMATER</h2>
+    
+    <div style="border-bottom:1px solid #ccc; padding-bottom:10px; margin-bottom:10px;">
+        <label>1. Floorplan Image</label>
+        <input type="file" id="file-img" accept="image/*">
+        
+        <label>2. Excel Mapping</label>
+        <input type="file" id="file-excel" accept=".xlsx">
+        
+        <label>Pixels per Meter</label>
+        <input type="number" id="val-ppm" value="60">
+
+        <label>Grid Removal</label>
+        <select id="val-grid">
+            <option value="none">None</option>
+            <option value="black_dotted" selected>Black Dotted Lines</option>
+        </select>
+        
+        <button class="primary" onclick="uploadData()">Start Session</button>
+    </div>
+
+    <div id="controls" style="display:none; flex-direction:column; gap:5px;">
+        <h3>Controls</h3>
+        <button onclick="undoLast()">Undo Last (U)</button>
+        <button onclick="downloadCSV()">Download CSV</button>
+        <button onclick="downloadImage()">Download Image</button>
+        
+        <h4>Spacing Rules</h4>
+        <label>Spherical (m)</label> <input type="number" id="rule-s" value="6">
+        <label>Horn (m)</label> <input type="number" id="rule-h" value="12">
+        <label>Ceiling (m)</label> <input type="number" id="rule-c" value="5">
+    </div>
+</div>
+
+<div id="main">
+    <div class="image-container">
+        <img id="work-canvas" src="" alt="Upload to start">
+    </div>
+</div>
+
+<div id="results-panel" style="display:none;">
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Room Name</th>
+                <th>Speaker Type</th>
+                <th>Perim (m)</th>
+                <th>Rule</th>
+                <th>Count</th>
+            </tr>
+        </thead>
+        <tbody id="results-body">
+        </tbody>
+    </table>
+</div>
+
+<script>
+    let sessionId = null;
+    const imgEl = document.getElementById('work-canvas');
+    const loadingEl = document.getElementById('loading');
+    const controls = document.getElementById('controls');
+    const resultsPanel = document.getElementById('results-panel');
+    const tbody = document.getElementById('results-body');
+
+    async function uploadData() {
+        const imgFile = document.getElementById('file-img').files[0];
+        const xlsFile = document.getElementById('file-excel').files[0];
+        
+        if (!imgFile || !xlsFile) { alert("Please select both files."); return; }
+
+        const formData = new FormData();
+        formData.append('image', imgFile);
+        formData.append('excel', xlsFile);
+        formData.append('px_per_m', document.getElementById('val-ppm').value);
+        formData.append('grid_mode', document.getElementById('val-grid').value);
+        
+        // Settings are initial, can't change after upload in this simple version
+        // (Though the UI inputs exist, we send defaults or values here)
+
+        loadingEl.style.display = "flex";
+
+        try {
+            const res = await fetch('/api/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            
+            sessionId = data.session_id;
+            imgEl.src = data.image;
+            
+            controls.style.display = 'flex';
+            resultsPanel.style.display = 'block';
+        } catch (e) {
+            alert("Error uploading: " + e);
+        } finally {
+            loadingEl.style.display = "none";
+        }
+    }
+
+    imgEl.addEventListener('click', async (e) => {
+        if (!sessionId) return;
+        
+        // Calculate coordinate relative to original image size
+        // naturalWidth is the real image size, width is the display size
+        const rect = imgEl.getBoundingClientRect();
+        const scaleX = imgEl.naturalWidth / rect.width;
+        const scaleY = imgEl.naturalHeight / rect.height;
+
+        const x = Math.round((e.clientX - rect.left) * scaleX);
+        const y = Math.round((e.clientY - rect.top) * scaleY);
+
+        loadingEl.style.display = "flex";
+        try {
+            const res = await fetch('/api/click', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ session_id: sessionId, x: x, y: y })
+            });
+            const data = await res.json();
+            
+            if (data.error) {
+                alert(data.error);
+            } else {
+                imgEl.src = data.image;
+                addTableRow(data.data);
+            }
+        } catch(e) { console.error(e); }
+        finally { loadingEl.style.display = "none"; }
+    });
+
+    function addTableRow(d) {
+        const row = `<tr>
+            <td>${d.room_idx}</td>
+            <td>${d.room_name}</td>
+            <td>${d.speaker_type}</td>
+            <td>${d.perimeter}</td>
+            <td>${d.spacing_rule}</td>
+            <td><strong>${d.speakers_needed}</strong></td>
+        </tr>`;
+        tbody.innerHTML += row;
+        // Scroll table to bottom
+        document.getElementById('results-panel').scrollTop = document.getElementById('results-panel').scrollHeight;
+    }
+
+    async function undoLast() {
+        if (!sessionId) return;
+        loadingEl.style.display = "flex";
+        try {
+            const res = await fetch('/api/undo', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ session_id: sessionId, x:0, y:0 })
+            });
+            const data = await res.json();
+            if (data.image) {
+                imgEl.src = data.image;
+                if (tbody.lastElementChild) tbody.removeChild(tbody.lastElementChild);
+            }
+        } finally { loadingEl.style.display = "none"; }
+    }
+
+    function downloadCSV() {
+        if(sessionId) window.location.href = `/api/download/csv?session_id=${sessionId}`;
+    }
+    
+    function downloadImage() {
+        if(sessionId) window.location.href = `/api/download/image?session_id=${sessionId}`;
+    }
+
+    // Keyboard shortcut for Undo
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'u' || e.key === 'U') undoLast();
+    });
+</script>
+</body>
+</html>
